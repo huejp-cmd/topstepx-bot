@@ -340,21 +340,27 @@ def webhook():
         if _shared_direction and _shared_direction != wanted:
             log.info(f"[60R] BUY ignoré — conflit direction {_shared_direction}")
             return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab': lab.state()})
+        if _pos_60r > 0:
+            log.info(f"[60R] BUY ignoré — déjà en position LONG ({_pos_60r} ctrs)")
+            return jsonify({'status': 'ignored', 'reason': 'already_long_60r', 'pos_60r': _pos_60r})
         _shared_direction = wanted
         _current_trade = {'side': 'long', 'contracts': contracts}
-        _pos_60r = contracts          # superposition : on empile
+        _pos_60r = contracts
         result = place_order('BUY', contracts)
-        log.info(f"[60R] BUY {contracts} → net 60R={_pos_60r} | {result}")
+        log.info(f"[60R] BUY {contracts} → pos_60r={_pos_60r} | {result}")
     elif action in ('sell', 'short'):
         wanted = 'short'
         if _shared_direction and _shared_direction != wanted:
             log.info(f"[60R] SELL ignoré — conflit direction {_shared_direction}")
             return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab': lab.state()})
+        if _pos_60r < 0:
+            log.info(f"[60R] SELL ignoré — déjà en position SHORT ({_pos_60r} ctrs)")
+            return jsonify({'status': 'ignored', 'reason': 'already_short_60r', 'pos_60r': _pos_60r})
         _shared_direction = wanted
         _current_trade = {'side': 'short', 'contracts': contracts}
         _pos_60r = -contracts
         result = place_order('SELL', contracts)
-        log.info(f"[60R] SELL {contracts} → net 60R={_pos_60r} | {result}")
+        log.info(f"[60R] SELL {contracts} → pos_60r={_pos_60r} | {result}")
     elif action == 'close':
         pos_open = get_positions()
         if _pos_60r != 0:
@@ -409,21 +415,29 @@ def webhook_45r():
         if _shared_direction and _shared_direction != wanted:
             log.info(f"[45R] BUY ignoré — conflit direction {_shared_direction}")
             return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab_45r': lab_45r.state()})
+        # Anti-empilement : si déjà en position LONG 45R, ignorer le signal
+        if _pos_45r > 0:
+            log.info(f"[45R] BUY ignoré — déjà en position LONG ({_pos_45r} ctrs)")
+            return jsonify({'status': 'ignored', 'reason': 'already_long_45r', 'pos_45r': _pos_45r})
         _shared_direction = wanted
         _current_trade_45r = {'side': 'long', 'contracts': contracts}
-        _pos_45r = contracts          # superposition
+        _pos_45r = contracts
         result = place_order('BUY', contracts)
-        log.info(f"[45R] BUY {contracts} → net 45R={_pos_45r} | {result}")
+        log.info(f"[45R] BUY {contracts} → pos_45r={_pos_45r} | {result}")
     elif action in ('sell', 'short'):
         wanted = 'short'
         if _shared_direction and _shared_direction != wanted:
             log.info(f"[45R] SELL ignoré — conflit direction {_shared_direction}")
             return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab_45r': lab_45r.state()})
+        # Anti-empilement : si déjà en position SHORT 45R, ignorer le signal
+        if _pos_45r < 0:
+            log.info(f"[45R] SELL ignoré — déjà en position SHORT ({_pos_45r} ctrs)")
+            return jsonify({'status': 'ignored', 'reason': 'already_short_45r', 'pos_45r': _pos_45r})
         _shared_direction = wanted
         _current_trade_45r = {'side': 'short', 'contracts': contracts}
         _pos_45r = -contracts
         result = place_order('SELL', contracts)
-        log.info(f"[45R] SELL {contracts} → net 45R={_pos_45r} | {result}")
+        log.info(f"[45R] SELL {contracts} → pos_45r={_pos_45r} | {result}")
     elif action == 'close':
         # Ferme la portion 45R (ou close_all si le bot a redémarré et perdu l'état)
         pos_open = get_positions()
