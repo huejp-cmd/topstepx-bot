@@ -1,5 +1,5 @@
 """
-topstepx_bot.py — Railway v3
+topstepx_bot.py — Railway v4
 Labouchere :
   - Séquence démarre [1, 1, 1, 1] (unités = contrats)
   - Mise = seq[0] + seq[-1] contrats
@@ -19,8 +19,13 @@ WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "jp_tsx_mnq_2026")
 ACCOUNT_ID    = int(os.environ.get("ACCOUNT_ID", "22024523"))
 CONTRACT_ID   = os.environ.get("CONTRACT_ID", "CON.F.US.MNQ.M26")
 UNIT_USD      = float(os.environ.get("UNIT_USD", "50"))   # $ par unité (= 1 contrat)
+MAX_CONTRACTS = int(os.environ.get("MAX_CONTRACTS", "4"))  # plafond absolu de sécurité
+MAX_DAILY_LOSS= float(os.environ.get("MAX_DAILY_LOSS", "1500"))  # circuit-breaker journalier $
 TSX_API       = "https://api.topstepx.com"
 TZ_ET         = ZoneInfo("America/New_York")
+
+_daily_realized_pnl: float = 0.0   # P&L réalisé du jour (reset à minuit ET)
+_daily_reset_date = None
 
 _token = os.environ.get("TOPSTEPX_TOKEN", "")
 
@@ -239,25 +244,40 @@ def webhook():
     if tok != WEBHOOK_TOKEN:
         return jsonify({'error': 'unauthorized'}), 401
 
+    global _daily_realized_pnl, _daily_reset_date
     data       = request.get_json(force=True, silent=True) or {}
     action     = data.get('action', '').lower()
-    # Nombre de contrats : utilise le Labouchere si non précisé dans le signal
-    contracts  = int(data.get('contracts', lab.contracts()))
+
+    # ⚠️ TOUJOURS utiliser le Labouchere interne — ignorer `contracts` du signal Pine Script
+    contracts  = min(lab.contracts(), MAX_CONTRACTS)
     lab_result = data.get('lab_result', '').lower()
     lab_pnl    = float(data.get('lab_pnl', 0) or 0)
 
-    log.info(f"Signal reçu: action={action} contracts={contracts}")
+    log.info(f"Signal reçu: action={action} contracts={contracts} (Labouchere interne)")
 
     now_et   = datetime.now(TZ_ET)
+    today    = now_et.date()
+
+    # Reset P&L journalier
+    if _daily_reset_date != today:
+        _daily_realized_pnl = 0.0
+        _daily_reset_date   = today
+
     bar_time = now_et.hour * 100 + now_et.minute
     if bar_time < 930 or bar_time >= 1545:
         return jsonify({'status': 'ignored', 'reason': 'outside_session'})
+
+    # Circuit-breaker : perte journalière max
+    if _daily_realized_pnl <= -MAX_DAILY_LOSS:
+        log.warning(f"CIRCUIT-BREAKER: perte journalière ${_daily_realized_pnl:.0f} >= limite ${MAX_DAILY_LOSS}")
+        return jsonify({'status': 'halted', 'reason': 'daily_loss_limit', 'pnl': _daily_realized_pnl})
 
     # Mise à jour Labouchere si résultat inclus dans le signal
     if lab_result in ('win', 'loss') and _current_trade:
         lab.record(_current_trade.get('side', '?'),
                    _current_trade.get('contracts', contracts),
                    lab_result, lab_pnl)
+        _daily_realized_pnl += lab_pnl
 
     if action in ('buy', 'long'):
         _current_trade = {'side': 'long', 'contracts': contracts}
@@ -345,5 +365,5 @@ threading.Thread(target=eod_guardian, daemon=True).start()
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
-    log.info(f"TopstepX Bot v3 — port {port} — seq [1,1,1,1] — gains÷3")
+    log.info(f"TopstepX Bot v4 — port {port} — Labouchere interne, max {MAX_CONTRACTS} contrats, stop ${MAX_DAILY_LOSS}/jour")
     app.run(host='0.0.0.0', port=port)
