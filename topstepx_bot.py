@@ -67,25 +67,26 @@ def get_account() -> dict:
 
 # ── Labouchere ────────────────────────────────────────────────────────────────
 class LabTracker:
-    INIT = [1, 1, 1, 1]   # séquence initiale en unités
+    INIT = [1, 1, 1, 1]   # séquence initiale en unités (peut être float)
 
-    def __init__(self, unit_usd=UNIT_USD):
+    def __init__(self, unit_usd=UNIT_USD, init=None):
         self.unit_usd = unit_usd
-        self.seq      = list(self.INIT)
-        self.tape     = [{"val": 1, "status": "active", "cycle": 0} for _ in self.INIT]
+        self.INIT_SEQ = init if init else list(self.INIT)
+        self.seq      = list(self.INIT_SEQ)
+        self.tape     = [{"val": v, "status": "active", "cycle": 0} for v in self.INIT_SEQ]
         self.cycle    = 0
         self.wins     = self.losses = 0
         self.trades   = []
         self._lock    = threading.Lock()
 
-    def _bet(self) -> int:
-        """Mise en unités (= contrats)."""
-        if not self.seq:   return 2
+    def _bet(self) -> float:
+        """Mise en unités."""
+        if not self.seq:   return 1.0
         if len(self.seq) == 1: return self.seq[0] * 2
         return self.seq[0] + self.seq[-1]
 
     def contracts(self) -> int:
-        return max(1, self._bet())
+        return max(1, round(self._bet()))
 
     def record(self, side: str, contracts: int, result: str, pnl: float = 0.0):
         with self._lock:
@@ -119,10 +120,10 @@ class LabTracker:
                     self.seq = []
                 if not self.seq:
                     self.cycle += 1
-                    self.seq = list(self.INIT)
+                    self.seq = list(self.INIT_SEQ)
                     self.tape.append({"val": None, "status": "separator", "cycle": self.cycle})
-                    for _ in self.INIT:
-                        self.tape.append({"val": 1, "status": "active", "cycle": self.cycle})
+                    for v in self.INIT_SEQ:
+                        self.tape.append({"val": v, "status": "active", "cycle": self.cycle})
 
     def state(self) -> dict:
         with self._lock:
@@ -188,8 +189,8 @@ class LabTracker:
             )
 
 
-lab           = LabTracker()          # Labouchere 60R (signal principal)
-lab_45r       = LabTracker()          # Labouchere 45R (signal secondaire)
+lab           = LabTracker(init=[1, 1, 1, 1])              # Labouchere 60R — BLOQUÉ ce soir
+lab_45r       = LabTracker(init=[0.5, 0.5, 0.5, 0.5])     # Labouchere 45R — 1 contrat ce soir
 _current_trade: dict    = {}
 _current_trade_45r: dict = {}
 
