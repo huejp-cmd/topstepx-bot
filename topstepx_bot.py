@@ -274,14 +274,23 @@ def lab_45r_loss():
     lab_45r.record(side, ctr, 'loss', pnl)
     return jsonify({'status': 'ok', 'lab_45r': lab_45r.state()})
 
-def partial_close(contracts: int):
-    """Ferme exactement N contrats en sens inverse de la position nette actuelle."""
+def partial_close(contracts: int, tracked_pos: int = 0):
+    """Ferme exactement N contrats.
+    tracked_pos : valeur de _pos_45r ou _pos_60r (+ = long, - = short)
+    Si tracked_pos == 0 (restart), on utilise l'API pour deviner la direction.
+    """
     pos = get_positions()
     if not pos:
         return {"success": True, "note": "already_flat"}
-    p = pos[0]
-    # type 1 = SHORT → racheter ; type 0 = LONG → revendre
-    side = 'BUY' if p.get('type', 0) == 1 else 'SELL'
+    if tracked_pos != 0:
+        # Direction connue depuis le suivi interne — fiable
+        side = 'SELL' if tracked_pos > 0 else 'BUY'
+    else:
+        # Fallback : utiliser la position API
+        # TopstepX : type 0 = LONG, type 1 = SHORT (d'après observations)
+        p = pos[0]
+        t = p.get('type', 0)
+        side = 'BUY' if t == 1 else 'SELL'
     return place_order(side, contracts)
 
 @app.route('/webhook', methods=['POST'])
@@ -347,12 +356,15 @@ def webhook():
         result = place_order('SELL', contracts)
         log.info(f"[60R] SELL {contracts} → net 60R={_pos_60r} | {result}")
     elif action == 'close':
-        # Ferme seulement la portion 60R ; laisse la portion 45R intacte
+        pos_open = get_positions()
         if _pos_60r != 0:
-            result = partial_close(abs(_pos_60r))
-            log.info(f"[60R] CLOSE partiel {abs(_pos_60r)} ctrs → {result}")
+            result = partial_close(abs(_pos_60r), tracked_pos=_pos_60r)
+            log.info(f"[60R] CLOSE {abs(_pos_60r)} ctrs (direction connue) → {result}")
+        elif pos_open and _pos_45r == 0:
+            result = close_all()
+            log.warning(f"[60R] CLOSE fallback (état perdu) → {result}")
         else:
-            result = {"note": "no_60r_position"}
+            result = {"note": "already_flat"}
         _pos_60r = 0
         if _pos_45r == 0:
             _shared_direction = None
@@ -413,15 +425,28 @@ def webhook_45r():
         result = place_order('SELL', contracts)
         log.info(f"[45R] SELL {contracts} → net 45R={_pos_45r} | {result}")
     elif action == 'close':
-        # Ferme seulement la portion 45R ; laisse la portion 60R intacte
+        # Ferme la portion 45R (ou close_all si le bot a redémarré et perdu l'état)
+        pos_open = get_positions()
         if _pos_45r != 0:
-            result = partial_close(abs(_pos_45r))
-            log.info(f"[45R] CLOSE partiel {abs(_pos_45r)} ctrs → {result}")
+            result = partial_close(abs(_pos_45r), tracked_pos=_pos_45r)
+            log.info(f"[45R] CLOSE {abs(_pos_45r)} ctrs (direction connue) → {result}")
+        elif pos_open:
+            # Bot redémarré — position ouverte mais état perdu → close_all sécurisé
+            result = close_all()
+            log.warning(f"[45R] CLOSE fallback (état perdu, pos_45r=0) → {result}")
         else:
-            result = {"note": "no_45r_position"}
+            result = {"note": "already_flat"}
+            log.info(f"[45R] CLOSE — déjà flat")
         _pos_45r = 0
         if _pos_60r == 0:
             _shared_direction = None
+        # Enregistrer résultat dans Labouchere si P&L disponible
+        if lab_pnl != 0 and _current_trade_45r:
+            result_str = 'win' if lab_pnl > 0 else 'loss'
+            lab_45r.record(_current_trade_45r.get('side','?'),
+                           _current_trade_45r.get('contracts', 1),
+                           result_str, lab_pnl)
+            _daily_realized_pnl += lab_pnl
     else:
         return jsonify({'error': f'action inconnue: {action}'}), 400
 
