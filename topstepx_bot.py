@@ -193,6 +193,11 @@ lab_45r       = LabTracker()          # Labouchere 45R (signal secondaire)
 _current_trade: dict    = {}
 _current_trade_45r: dict = {}
 
+# Direction commune — confirmation mutuelle obligatoire
+# None = neutre (aucun TF actif)
+# 'long' ou 'short' = direction établie par le 1er signal
+_shared_direction: str | None = None
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route('/health')
 def health():
@@ -266,7 +271,7 @@ def lab_45r_loss():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global _current_trade
+    global _current_trade, _shared_direction
     tok = request.headers.get('X-Webhook-Token') or request.args.get('token', '')
     if tok != WEBHOOK_TOKEN:
         return jsonify({'error': 'unauthorized'}), 401
@@ -307,26 +312,37 @@ def webhook():
         _daily_realized_pnl += lab_pnl
 
     if action in ('buy', 'long'):
+        wanted = 'long'
+        if _shared_direction and _shared_direction != wanted:
+            log.info(f"[60R] BUY ignoré — direction partagée = {_shared_direction}")
+            return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab': lab.state()})
+        _shared_direction = wanted
         _current_trade = {'side': 'long', 'contracts': contracts}
         result = place_order('BUY', contracts)
-        log.info(f"BUY {contracts} → {result}")
+        log.info(f"[60R] BUY {contracts} → {result}")
     elif action in ('sell', 'short'):
+        wanted = 'short'
+        if _shared_direction and _shared_direction != wanted:
+            log.info(f"[60R] SELL ignoré — direction partagée = {_shared_direction}")
+            return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab': lab.state()})
+        _shared_direction = wanted
         _current_trade = {'side': 'short', 'contracts': contracts}
         result = place_order('SELL', contracts)
-        log.info(f"SELL {contracts} → {result}")
+        log.info(f"[60R] SELL {contracts} → {result}")
     elif action == 'close':
+        _shared_direction = None
         result = close_all()
-        log.info(f"CLOSE → {result}")
+        log.info(f"[60R] CLOSE → {result}")
     else:
         return jsonify({'error': f'action inconnue: {action}'}), 400
 
-    return jsonify({'status': 'ok', 'action': action, 'contracts': contracts,
-                    'result': result, 'lab': lab.state()})
+    return jsonify({'status': 'ok', 'source': '60r', 'action': action, 'contracts': contracts,
+                    'result': result, 'lab': lab.state(), 'direction': _shared_direction})
 
 @app.route('/webhook/45r', methods=['POST'])
 def webhook_45r():
     """Webhook dédié 45R — Labouchere indépendant du 60R."""
-    global _current_trade_45r
+    global _current_trade_45r, _shared_direction
     tok = request.headers.get('X-Webhook-Token') or request.args.get('token', '')
     if tok != WEBHOOK_TOKEN:
         return jsonify({'error': 'unauthorized'}), 401
@@ -353,21 +369,32 @@ def webhook_45r():
                        lab_result, lab_pnl)
 
     if action in ('buy', 'long'):
+        wanted = 'long'
+        if _shared_direction and _shared_direction != wanted:
+            log.info(f"[45R] BUY ignoré — direction partagée = {_shared_direction}")
+            return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab_45r': lab_45r.state()})
+        _shared_direction = wanted
         _current_trade_45r = {'side': 'long', 'contracts': contracts}
         result = place_order('BUY', contracts)
         log.info(f"[45R] BUY {contracts} → {result}")
     elif action in ('sell', 'short'):
+        wanted = 'short'
+        if _shared_direction and _shared_direction != wanted:
+            log.info(f"[45R] SELL ignoré — direction partagée = {_shared_direction}")
+            return jsonify({'status': 'ignored', 'reason': f'direction_conflict:{_shared_direction}', 'lab_45r': lab_45r.state()})
+        _shared_direction = wanted
         _current_trade_45r = {'side': 'short', 'contracts': contracts}
         result = place_order('SELL', contracts)
         log.info(f"[45R] SELL {contracts} → {result}")
     elif action == 'close':
+        _shared_direction = None
         result = close_all()
         log.info(f"[45R] CLOSE → {result}")
     else:
         return jsonify({'error': f'action inconnue: {action}'}), 400
 
     return jsonify({'status': 'ok', 'source': '45r', 'action': action,
-                    'contracts': contracts, 'result': result, 'lab_45r': lab_45r.state()})
+                    'contracts': contracts, 'result': result, 'lab_45r': lab_45r.state(), 'direction': _shared_direction})
 
 @app.route('/dashboard')
 def dashboard():
