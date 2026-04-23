@@ -188,8 +188,10 @@ class LabTracker:
             )
 
 
-lab           = LabTracker()
-_current_trade: dict = {}
+lab           = LabTracker()          # Labouchere 60R (signal principal)
+lab_45r       = LabTracker()          # Labouchere 45R (signal secondaire)
+_current_trade: dict    = {}
+_current_trade_45r: dict = {}
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route('/health')
@@ -219,7 +221,7 @@ def lab_state():
 
 @app.route('/lab/win', methods=['POST'])
 def lab_win():
-    """WIN manuel : POST {"pnl": 300}"""
+    """WIN manuel 60R : POST {"pnl": 300}"""
     body = request.get_json(force=True, silent=True) or {}
     pnl  = float(body.get('pnl', 0) or 0)
     side = _current_trade.get('side', 'long')
@@ -229,13 +231,38 @@ def lab_win():
 
 @app.route('/lab/loss', methods=['POST'])
 def lab_loss():
-    """LOSS manuel : POST {"pnl": -120}"""
+    """LOSS manuel 60R : POST {"pnl": -120}"""
     body = request.get_json(force=True, silent=True) or {}
     pnl  = float(body.get('pnl', 0) or 0)
     side = _current_trade.get('side', 'long')
     ctr  = _current_trade.get('contracts', lab.contracts())
     lab.record(side, ctr, 'loss', pnl)
     return jsonify({'status': 'ok', 'lab': lab.state()})
+
+# ── Routes 45R ────────────────────────────────────────────────────────────────
+@app.route('/lab/45r/state')
+def lab_45r_state():
+    return jsonify(lab_45r.state())
+
+@app.route('/lab/45r/win', methods=['POST'])
+def lab_45r_win():
+    """WIN manuel 45R : POST {"pnl": 300}"""
+    body = request.get_json(force=True, silent=True) or {}
+    pnl  = float(body.get('pnl', 0) or 0)
+    side = _current_trade_45r.get('side', 'long')
+    ctr  = _current_trade_45r.get('contracts', lab_45r.contracts())
+    lab_45r.record(side, ctr, 'win', pnl)
+    return jsonify({'status': 'ok', 'lab_45r': lab_45r.state()})
+
+@app.route('/lab/45r/loss', methods=['POST'])
+def lab_45r_loss():
+    """LOSS manuel 45R : POST {"pnl": -120}"""
+    body = request.get_json(force=True, silent=True) or {}
+    pnl  = float(body.get('pnl', 0) or 0)
+    side = _current_trade_45r.get('side', 'long')
+    ctr  = _current_trade_45r.get('contracts', lab_45r.contracts())
+    lab_45r.record(side, ctr, 'loss', pnl)
+    return jsonify({'status': 'ok', 'lab_45r': lab_45r.state()})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -295,6 +322,52 @@ def webhook():
 
     return jsonify({'status': 'ok', 'action': action, 'contracts': contracts,
                     'result': result, 'lab': lab.state()})
+
+@app.route('/webhook/45r', methods=['POST'])
+def webhook_45r():
+    """Webhook dédié 45R — Labouchere indépendant du 60R."""
+    global _current_trade_45r
+    tok = request.headers.get('X-Webhook-Token') or request.args.get('token', '')
+    if tok != WEBHOOK_TOKEN:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    data       = request.get_json(force=True, silent=True) or {}
+    action     = data.get('action', '').lower()
+    contracts  = min(lab_45r.contracts(), MAX_CONTRACTS)
+    lab_result = data.get('lab_result', '').lower()
+    lab_pnl    = float(data.get('lab_pnl', 0) or 0)
+
+    log.info(f"[45R] Signal reçu: action={action} contracts={contracts}")
+
+    now_et   = datetime.now(TZ_ET)
+    bar_time = now_et.hour * 100 + now_et.minute
+    if bar_time < 930 or bar_time >= 1545:
+        return jsonify({'status': 'ignored', 'reason': 'outside_session'})
+
+    if _daily_realized_pnl <= -MAX_DAILY_LOSS:
+        return jsonify({'status': 'halted', 'reason': 'daily_loss_limit'})
+
+    if lab_result in ('win', 'loss') and _current_trade_45r:
+        lab_45r.record(_current_trade_45r.get('side', '?'),
+                       _current_trade_45r.get('contracts', contracts),
+                       lab_result, lab_pnl)
+
+    if action in ('buy', 'long'):
+        _current_trade_45r = {'side': 'long', 'contracts': contracts}
+        result = place_order('BUY', contracts)
+        log.info(f"[45R] BUY {contracts} → {result}")
+    elif action in ('sell', 'short'):
+        _current_trade_45r = {'side': 'short', 'contracts': contracts}
+        result = place_order('SELL', contracts)
+        log.info(f"[45R] SELL {contracts} → {result}")
+    elif action == 'close':
+        result = close_all()
+        log.info(f"[45R] CLOSE → {result}")
+    else:
+        return jsonify({'error': f'action inconnue: {action}'}), 400
+
+    return jsonify({'status': 'ok', 'source': '45r', 'action': action,
+                    'contracts': contracts, 'result': result, 'lab_45r': lab_45r.state()})
 
 @app.route('/dashboard')
 def dashboard():
